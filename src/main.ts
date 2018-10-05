@@ -10,52 +10,115 @@ import jwt from 'jsonwebtoken';
 import { isArray, isEmpty, pick } from 'lodash';
 import config from './config.json';
 import mongodbAdapter from 'fortune-mongodb';
+import { ApiResolver } from './resolvers/api.resolver';
+import { YosAnyScalar } from './scalars/yos-any.scalar';
+import { YosEmailAddressScalar } from './scalars/yos-email-address.scalar';
 
 const typeDefs = `
-enum Role {
-	# Open to all requests
-	ANY
-	# Must be logged in
-	USER
-	# User must have created/be the type
-	OWNER
-	ADMIN
-}
+  
+    # ==================================================================================================================
+    # Directives
+    # ==================================================================================================================
+    
+    "Marks a field or an enum as deprecated (https://www.apollographql.com/docs/graphql-tools/schema-directives.html)"
+    directive @deprecated(
+      "Allows to specify a reason for the tag as deprecated"
+      reason: String = "No longer supported"
+    ) on FIELD_DEFINITION | ENUM_VALUE
+  
+    # ==================================================================================================================
+    # Enums
+    # ==================================================================================================================
+    
+    "User roles"
+    enum Role {
+    
+      "User must be an admin"
+      ADMIN
+      
+      "Open to all requests"
+      ANY
+      
+      "User must have created/be the type"
+      OWNER
+      
+      "Must be logged in"
+      USER
+    }
 
-# Only users can create posts, anybody can read posts, only the person who created the post can update/delete it
-type Post @model @auth(create: USER, read: ANY, update: OWNER, delete: OWNER) {
-  id: ID! @unique
-	title: String!
-	text: String
-	author: User @relation(name: "posts") @auth(rules: "SELF", create: USER, read: ANY, update: OWNER, delete: OWNER)
-}
+    # ==================================================================================================================
+    # Scalars
+    # Custom scalars see https://www.apollographql.com/docs/graphql-tools/scalars.html
+    # ==================================================================================================================
+    
+    "Scalar for any (JSON) value"
+    scalar Any
+    
+    "Scalar for EmailAddresses"
+    scalar EmailAddress
 
-# Anyone can create users (aka signup), be able to see user info by default, can only update yourself, and only admins can delete
-type User @model @auth(create: ANY, read: ANY, update: OWNER, delete: ADMIN) {
-	id: ID! @unique
-	username: String! @unique
-	# don't let anyone read email
-	email: String! @unique @auth(create: ANY, read: OWNER, update: OWNER, delete: ADMIN)
-	# only admins can read password
-	password: String! @auth(create: ANY, read: ADMIN, update: OWNER, delete: ADMIN)
-  name : String
-	posts: [Post] @relation(name: "posts")
-	# Only admins can alter roles, will need additional logic in authenticate function so users can only set themself to USER role
-	roles: [Role] @default(value: "USER") @auth(create: ANY, read: ADMIN, update: ADMIN, delete: ADMIN, rules: "only:USER")
-}
+    
+    # ==================================================================================================================
+    # Types
+    # ==================================================================================================================
+  
+    "Information about the API"
+    type API {
+     
+      "Environment of the API"
+      environment: String!
+      
+      "Name of the API"
+      name: String!
+      
+      "Current version of API"
+      version: String!
+      
+      "Current Position"
+      ipLookup: Any @deprecated(reason: "May be to much information")
+    }
+    
+    "User"
+    type User @model @auth(create: ANY, read: ANY, update: OWNER, delete: ADMIN) {
+      
+      "ID of the user"
+      id: ID! @unique
+      
+      "Unique username"
+      username: String @unique
+    
+      "Email of the user"
+      email: EmailAddress! @unique @auth(create: ANY, read: OWNER, update: OWNER, delete: ADMIN)
+    
+      "Only admins can read password"
+      password: String! @auth(create: ANY, read: ADMIN, update: OWNER, delete: ADMIN)
+      
+      """
+      Only admins can alter roles, will need additional logic in authenticate function so users can only set themself 
+      to USER role, so the only:USER in the rules can be used in the authenticate function
+      """
+      roles: [Role] @default(value: "USER") @auth(create: ANY, read: ADMIN, update: ADMIN, delete: ADMIN, rules: "only:USER")
+    }
+    
+    """
+    UserIdentifiers aren't part of the model, so queries/mutations won't be created for it.
+    Via @auth the importData resolver could alter it otherwise
+    """
+    type UserIdentifiers @auth {
+      id: ID!
+      userID: ID
+      password: String
+      identifiers: [String]
+      roles: [Role]
+    }
 
-# Notice this isn't part of the model, so queries/mutations won't be created for it.
-# We will still add @auth to it though as the importData resolver could alter it otherwise
-# Exists so we can store identifiers in all lowercase, but we will use the backend data resolver instead of graphql
-type UserIdentifiers @auth {
-	id: ID!
-	userID: ID
-	password: String
-	identifiers: [String]
-	roles: [Role]
-}
 
-`;
+    # ==================================================================================================================
+    # Queries
+    # ==================================================================================================================
+
+    
+  `;
 
 interface CurrentUser {
 	id?: string;
@@ -324,7 +387,12 @@ const getSchemaWithAuth = (genie: GraphQLGenie): GraphQLSchema => {
 				Provided on signup (createUser mutation)
 				"""
 				jwt: String
-			}`
+			}
+			extend type Query {
+				"Information about the API"
+      	api: API
+    	}
+			`
 		],
 		resolvers: {
 			UserPayload: {
@@ -368,6 +436,17 @@ const getSchemaWithAuth = (genie: GraphQLGenie): GraphQLSchema => {
 					}
 					throw new AuthenticationError('No Such User exists.');
 				}
+			},
+
+			/** Resolver for any (JSON) */
+			Any: YosAnyScalar,
+
+			/** Resolver for email addresses */
+			EmailAddress: YosEmailAddressScalar,
+
+			/** Resolver for queries */
+			Query: {
+				api: (...params: any[]) => ApiResolver.api(params)
 			}
 		}
 	});
